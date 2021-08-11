@@ -19,6 +19,14 @@ services:
     ports: ["8000:8000"]
     environment:
       <<: *QUICKSTART_ENVIRONMENT
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.plaid-api-go.rule=Host(`plaid.goodfun.io`) && PathPrefix(`/api`)
+      - traefik.http.routers.plaid-api-go.entryPoints=websecure
+      - traefik.http.routers.plaid-api-go.tls=true
+      - traefik.http.routers.plaid-api-go.tls.certresolver=plaid
+      - traefik.http.services.go.loadbalancer.server.port=8000
+      - traefik.http.services.go.loadbalancer.passHostHeader=true
   java:
     networks:
       - "quickstart"
@@ -66,12 +74,23 @@ services:
   frontend:
     environment:
       - REACT_APP_API_HOST
+      - HOST
+      - PUBLIC_URL
     networks:
       - "quickstart"
     build:
       context: .
       dockerfile: ./frontend/Dockerfile
     ports: ["3000:3000"]
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.plaid.rule=Host(`plaid.goodfun.io`)
+      - traefik.http.routers.plaid.entryPoints=websecure
+      - traefik.http.routers.plaid.tls=true
+      - traefik.http.routers.plaid.tls.certresolver=plaid
+      - traefik.http.services.plaid.loadbalancer.server.port=3000
+      - traefik.http.services.plaid.loadbalancer.passHostHeader=true
+    hostname: ${HOST}
 networks:
   quickstart:
     name: quickstart
