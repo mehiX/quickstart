@@ -74,8 +74,6 @@ services:
   frontend:
     environment:
       - REACT_APP_API_HOST
-      - HOST
-      - PUBLIC_URL
     networks:
       - "quickstart"
     build:
@@ -90,7 +88,6 @@ services:
       - traefik.http.routers.plaid.tls.certresolver=plaid
       - traefik.http.services.plaid.loadbalancer.server.port=3000
       - traefik.http.services.plaid.loadbalancer.passHostHeader=true
-    hostname: ${HOST}
 networks:
   quickstart:
     name: quickstart
