@@ -10,7 +10,10 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-const connStr = "mongodb+srv://clusterdevopsexperts.lujoh.mongodb.net/myFirstDatabase?authSource=%24external&authMechanism=MONGODB-X509&retryWrites=true&w=majority&tlsCertificateKeyFile=X509-cert-1674131487416060503.pem"
+const (
+	mongoUserCert = "X509-cert-1674131487416060503.pem"
+	connStr       = "mongodb+srv://clusterdevopsexperts.lujoh.mongodb.net/myFirstDatabase?authSource=%24external&authMechanism=MONGODB-X509&retryWrites=true&w=majority&tlsCertificateKeyFile=" + mongoUserCert
+)
 
 var mongoCli *mongo.Client
 
@@ -24,8 +27,8 @@ func init() {
 	}
 	log.Println("Created MongoDB client")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
+	ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
+	//defer cancel()
 
 	err = mongoCli.Connect(ctx)
 
@@ -33,7 +36,7 @@ func init() {
 		log.Fatal(err)
 	}
 	log.Println("Connected to MongoDB")
-	defer mongoCli.Disconnect(ctx)
+	//defer mongoCli.Disconnect(ctx)
 
 	err = mongoCli.Ping(ctx, nil)
 	if err != nil {
@@ -45,18 +48,43 @@ func init() {
 
 func saveToDb(ctx context.Context, d plaid.GetTransactionsResponse) error {
 
-	if err := mongoCli.Connect(ctx); err != nil {
-		return err
+	log.Println("Saving response")
+
+	res, err := saveAccounts(ctx, d.Accounts)
+	if err != nil {
+		log.Println("Error saving accounts", err)
+	} else {
+		log.Println("Accounts inserted: ", len(res.InsertedIDs))
 	}
-	defer mongoCli.Disconnect(ctx)
 
-	accountsCollection := mongoCli.Database("plaid-trans").Collection("accounts")
-
-	for _, a := range d.Accounts {
-		if _, err := accountsCollection.InsertOne(ctx, a); err != nil {
-			log.Println(err)
-		}
+	res, err = saveTransactions(ctx, d.Transactions)
+	if err != nil {
+		log.Println("Error saving transactions", err)
+	} else {
+		log.Println("Transactions inserted: ", len(res.InsertedIDs))
 	}
 
 	return nil
+}
+
+func saveAccounts(ctx context.Context, accounts []plaid.Account) (*mongo.InsertManyResult, error) {
+	accountsCollection := mongoCli.Database("plaid-trans").Collection("accounts")
+
+	var data []interface{}
+	for _, a := range accounts {
+		data = append(data, a)
+	}
+
+	return accountsCollection.InsertMany(ctx, data)
+}
+
+func saveTransactions(ctx context.Context, transactions []plaid.Transaction) (*mongo.InsertManyResult, error) {
+	transactionsCollection := mongoCli.Database("plaid-trans").Collection("transactions")
+
+	var data []interface{}
+	for _, t := range transactions {
+		data = append(data, t)
+	}
+
+	return transactionsCollection.InsertMany(ctx, data)
 }

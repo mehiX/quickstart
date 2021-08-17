@@ -53,6 +53,6 @@ docker-compose.local*.yml
 #vscode
 .vscode
 
-/*.json
+go/*.json
 go/*.pem
 test.md

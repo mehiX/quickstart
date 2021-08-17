@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -109,6 +112,7 @@ func main() {
 	r.GET("/api/investment_transactions", investmentTransactions)
 	r.GET("/api/holdings", holdings)
 	r.GET("/api/assets", assets)
+	r.GET("/api/test-insert-trans", testInsertTrans)
 
 	err := r.Run(":" + APP_PORT)
 	if err != nil {
@@ -274,12 +278,43 @@ func transactions(c *gin.Context) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	saveToDb(ctx, response)
+	if err := saveToDb(ctx, response); err != nil {
+		renderError(c, err)
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"accounts":     response.Accounts,
 		"transactions": response.Transactions,
 	})
+}
+
+func testInsertTrans(c *gin.Context) {
+
+	b, err := ioutil.ReadFile("resp_transactions.json")
+	if err != nil {
+		renderError(c, err)
+		return
+	}
+
+	var response plaid.GetTransactionsResponse
+
+	if err := json.NewDecoder(bytes.NewBuffer(b)).Decode(&response); err != nil {
+		renderError(c, err)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := saveToDb(ctx, response); err != nil {
+		renderError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": "OK",
+	})
+
 }
 
 // This functionality is only relevant for the UK Payment Initiation product.
