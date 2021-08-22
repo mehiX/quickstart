@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/plaid/plaid-go/plaid"
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -87,4 +88,28 @@ func saveTransactions(ctx context.Context, transactions []plaid.Transaction) (*m
 	}
 
 	return transactionsCollection.InsertMany(ctx, data)
+}
+
+func fetchAllTransactions(ctx context.Context) ([]plaid.Transaction, error) {
+	tc := mongoCli.Database("plaid-trans").Collection("transactions")
+
+	curr, err := tc.Find(ctx, bson.M{})
+	if err != nil {
+		return nil, err
+	}
+	defer curr.Close(context.Background())
+
+	all := make([]plaid.Transaction, 0)
+
+	for curr.Next(context.Background()) {
+		var t plaid.Transaction
+		if err := curr.Decode(&t); err != nil {
+			log.Println(err)
+		} else {
+			all = append(all, t)
+		}
+	}
+
+	return all, nil
+
 }

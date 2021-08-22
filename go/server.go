@@ -1,14 +1,13 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/csv"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
+	"reflect"
 	"strings"
 	"time"
 
@@ -112,7 +111,7 @@ func main() {
 	r.GET("/api/investment_transactions", investmentTransactions)
 	r.GET("/api/holdings", holdings)
 	r.GET("/api/assets", assets)
-	r.GET("/api/test-insert-trans", testInsertTrans)
+	r.GET("/api/all/transactions/csv", allTransactionsAsCsv)
 
 	err := r.Run(":" + APP_PORT)
 	if err != nil {
@@ -265,9 +264,9 @@ func identity(c *gin.Context) {
 }
 
 func transactions(c *gin.Context) {
-	// pull transactions for the past 30 days
+	// pull transactions for the past (aproximatively) 24 months
 	endDate := time.Now().Local().Format("2006-01-02")
-	startDate := time.Now().Local().Add(-30 * 24 * time.Hour).Format("2006-01-02")
+	startDate := time.Now().Local().Add(-25 * 30 * 24 * time.Hour).Format("2006-01-02")
 
 	response, err := client.GetTransactions(accessToken, startDate, endDate)
 
@@ -289,32 +288,116 @@ func transactions(c *gin.Context) {
 	})
 }
 
-func testInsertTrans(c *gin.Context) {
+func allTransactionsAsCsv(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-	b, err := ioutil.ReadFile("resp_transactions.json")
+	all, err := fetchAllTransactions(ctx)
 	if err != nil {
 		renderError(c, err)
 		return
 	}
 
-	var response plaid.GetTransactionsResponse
+	c.Header("Content-Type", "text/csv")
 
-	if err := json.NewDecoder(bytes.NewBuffer(b)).Decode(&response); err != nil {
-		renderError(c, err)
-		return
+	cw := csv.NewWriter(c.Writer)
+	cw.Comma = '#'
+	// write Header
+	writeCsvHeader(cw)
+	// write records
+	for _, t := range all {
+		var rec []string
+		rec = append(rec, t.AccountID)
+		rec = append(rec, fmt.Sprintf("%f", t.Amount))
+		rec = append(rec, t.ISOCurrencyCode)
+		rec = append(rec, t.UnofficialCurrencyCode)
+		rec = append(rec, strings.Join(t.Category, ","))
+		rec = append(rec, t.CategoryID)
+		rec = append(rec, t.Date)
+		rec = append(rec, t.AuthorizedDate)
+
+		rec = append(rec, t.Location.Address)
+		rec = append(rec, t.Location.City)
+		rec = append(rec, fmt.Sprintf("%f", t.Location.Lat))
+		rec = append(rec, fmt.Sprintf("%f", t.Location.Lon))
+		rec = append(rec, t.Location.Region)
+		rec = append(rec, t.Location.StoreNumber)
+		rec = append(rec, t.Location.PostalCode)
+		rec = append(rec, t.Location.Country)
+
+		rec = append(rec, t.Name)
+		rec = append(rec, t.PaymentMeta.ByOrderOf)
+		rec = append(rec, t.PaymentMeta.Payee)
+		rec = append(rec, t.PaymentMeta.Payer)
+		rec = append(rec, t.PaymentMeta.PaymentMethod)
+		rec = append(rec, t.PaymentMeta.PaymentProcessor)
+		rec = append(rec, t.PaymentMeta.PPDID)
+		rec = append(rec, t.PaymentMeta.Reason)
+		rec = append(rec, t.PaymentMeta.ReferenceNumber)
+
+		rec = append(rec, t.PaymentChannel)
+		rec = append(rec, fmt.Sprintf("%v", t.Pending))
+
+		rec = append(rec, t.PendingTransactionID)
+		rec = append(rec, t.AccountOwner)
+		rec = append(rec, t.ID)
+		rec = append(rec, t.Type)
+		rec = append(rec, t.Code)
+
+		cw.Write(rec)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	if err := saveToDb(ctx, response); err != nil {
-		renderError(c, err)
-		return
+	cw.Flush()
+
+}
+
+func writeCsvHeader(cw *csv.Writer) {
+	var rec []string
+
+	rec = addFieldsByJsonTag(
+		rec,
+		reflect.TypeOf(plaid.Transaction{}),
+		[]string{"AccountID", "Amount", "ISOCurrencyCode", "UnofficialCurrencyCode", "Category", "CategoryID", "Date", "AuthorizedDate"},
+	)
+
+	rec = addFieldsByJsonTag(
+		rec,
+		reflect.TypeOf(plaid.Location{}),
+		[]string{"Address", "City", "Lat", "Lon", "Region", "StoreNumber", "PostalCode", "Country"},
+	)
+
+	rec = addFieldsByJsonTag(
+		rec,
+		reflect.TypeOf(plaid.Transaction{}),
+		[]string{"Name"},
+	)
+
+	rec = addFieldsByJsonTag(
+		rec,
+		reflect.TypeOf(plaid.PaymentMeta{}),
+		[]string{"ByOrderOf", "Payee", "Payer", "PaymentMethod", "PaymentProcessor", "PPDID", "Reason", "ReferenceNumber"},
+	)
+
+	rec = addFieldsByJsonTag(
+		rec,
+		reflect.TypeOf(plaid.Transaction{}),
+		[]string{"PaymentChannel", "Pending", "PendingTransactionID", "AccountOwner", "ID", "Type", "Code"},
+	)
+
+	cw.Write(rec)
+}
+
+func addFieldsByJsonTag(rec []string, tType reflect.Type, fields []string) []string {
+	for _, fName := range fields {
+		f, ok := tType.FieldByName(fName)
+		if !ok {
+			rec = append(rec, fName)
+		} else {
+			rec = append(rec, f.Tag.Get("json"))
+		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"status": "OK",
-	})
-
+	return rec
 }
 
 // This functionality is only relevant for the UK Payment Initiation product.
