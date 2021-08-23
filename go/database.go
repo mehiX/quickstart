@@ -113,3 +113,26 @@ func fetchAllTransactions(ctx context.Context) ([]plaid.Transaction, error) {
 	return all, nil
 
 }
+
+func fetchAllAccounts(ctx context.Context) ([]plaid.Account, error) {
+	ac := mongoCli.Database("plaid-trans").Collection("accounts")
+
+	curr, err := ac.Find(ctx, bson.M{})
+	if err != nil {
+		return nil, err
+	}
+	defer curr.Close(context.Background())
+
+	all := make([]plaid.Account, 0)
+
+	for curr.Next(context.Background()) {
+		var a plaid.Account
+		if err := curr.Decode(&a); err != nil {
+			log.Println(err)
+		} else {
+			all = append(all, a)
+		}
+	}
+
+	return all, nil
+}

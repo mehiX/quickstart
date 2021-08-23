@@ -112,6 +112,7 @@ func main() {
 	r.GET("/api/holdings", holdings)
 	r.GET("/api/assets", assets)
 	r.GET("/api/all/transactions/csv", allTransactionsAsCsv)
+	r.GET("/api/all/balances/csv", allAccountsAsCsv)
 
 	err := r.Run(":" + APP_PORT)
 	if err != nil {
@@ -288,6 +289,44 @@ func transactions(c *gin.Context) {
 	})
 }
 
+func allAccountsAsCsv(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	all, err := fetchAllAccounts(ctx)
+	if err != nil {
+		renderError(c, err)
+		return
+	}
+
+	c.Header("Content-Type", "text/csv")
+
+	cw := csv.NewWriter(c.Writer)
+	cw.Comma = '#'
+
+	writeCsvHeaderAccounts(cw)
+
+	for _, a := range all {
+		var rec []string
+		rec = append(rec, a.AccountID)
+		rec = append(rec, fmt.Sprintf("%f", a.Balances.Available))
+		rec = append(rec, fmt.Sprintf("%f", a.Balances.Current))
+		rec = append(rec, fmt.Sprintf("%f", a.Balances.Limit))
+		rec = append(rec, a.Balances.ISOCurrencyCode)
+		rec = append(rec, a.Balances.UnofficialCurrencyCode)
+		rec = append(rec, a.Mask)
+		rec = append(rec, a.Name)
+		rec = append(rec, a.OfficialName)
+		rec = append(rec, a.Subtype)
+		rec = append(rec, a.Type)
+		rec = append(rec, a.VerificationStatus)
+
+		cw.Write(rec)
+	}
+
+	cw.Flush()
+}
+
 func allTransactionsAsCsv(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -303,7 +342,7 @@ func allTransactionsAsCsv(c *gin.Context) {
 	cw := csv.NewWriter(c.Writer)
 	cw.Comma = '#'
 	// write Header
-	writeCsvHeader(cw)
+	writeCsvHeaderTransactions(cw)
 	// write records
 	for _, t := range all {
 		var rec []string
@@ -351,7 +390,32 @@ func allTransactionsAsCsv(c *gin.Context) {
 
 }
 
-func writeCsvHeader(cw *csv.Writer) {
+func writeCsvHeaderAccounts(cw *csv.Writer) {
+
+	var rec []string
+
+	rec = addFieldsByJsonTag(
+		rec,
+		reflect.TypeOf(plaid.Account{}),
+		[]string{"AccountID"},
+	)
+
+	rec = addFieldsByJsonTag(
+		rec,
+		reflect.TypeOf(plaid.AccountBalances{}),
+		[]string{"Available", "Current", "Limit", "ISOCurrencyCode", "UnofficialCurrencyCode"},
+	)
+
+	rec = addFieldsByJsonTag(
+		rec,
+		reflect.TypeOf(plaid.Account{}),
+		[]string{"Mask", "Name", "OfficialName", "Subtype", "Type", "VerificationStatus"},
+	)
+
+	cw.Write(rec)
+}
+
+func writeCsvHeaderTransactions(cw *csv.Writer) {
 	var rec []string
 
 	rec = addFieldsByJsonTag(

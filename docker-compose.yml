@@ -21,7 +21,7 @@ services:
       <<: *QUICKSTART_ENVIRONMENT
     labels:
       - traefik.enable=true
-      - traefik.http.routers.plaid-api-go.rule=Host(`plaid.goodfun.io`) && PathPrefix(`/api/all/transactions/csv`)
+      - traefik.http.routers.plaid-api-go.rule=Host(`plaid.goodfun.io`) && (PathPrefix(`/api/all/transactions/csv`) || PathPrefix(`/api/all/balances/csv`))
       - traefik.http.routers.plaid-api-go.entryPoints=websecure
       - traefik.http.routers.plaid-api-go.middlewares=auth@file
       - traefik.http.routers.plaid-api-go.tls=true
