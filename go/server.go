@@ -305,7 +305,11 @@ func transactions(c *gin.Context) {
 			return
 		}
 
-		accounts = append(accounts, response.Accounts...)
+		if total < 0 {
+			// save the accounts only once
+			accounts = append(accounts, response.Accounts...)
+		}
+
 		transactions = append(transactions, response.Transactions...)
 
 		total = response.TotalTransactions
