@@ -25,6 +25,7 @@ var (
 	PLAID_REDIRECT_URI                = ""
 	APP_PORT                          = ""
 	client              *plaid.Client = nil
+	STORE_DATA                        = false
 )
 
 var environments = map[string]plaid.Environment{
@@ -81,6 +82,11 @@ func init() {
 	if err != nil {
 		panic(fmt.Errorf("unexpected error while initializing plaid client %w", err))
 	}
+
+	t := os.Getenv("STORE_DATA")
+	STORE_DATA = "true" == strings.ToLower(t) || "yes" == strings.ToLower(t)
+
+	log.Printf("Store data: %v\n", STORE_DATA)
 }
 
 func main() {
@@ -265,27 +271,61 @@ func identity(c *gin.Context) {
 }
 
 func transactions(c *gin.Context) {
-	// pull transactions for the past (aproximatively) 24 months
-	endDate := time.Now().Local().Format("2006-01-02")
-	startDate := time.Now().Local().Add(-25 * 30 * 24 * time.Hour).Format("2006-01-02")
+	const iso8601TimeFormat = "2006-01-02"
+	// pull transactions for the past year
+	endDate := time.Now().Local().Format(iso8601TimeFormat)
+	startDate := time.Now().Local().Add(-365 * 24 * time.Hour).Format(iso8601TimeFormat)
 
-	response, err := client.GetTransactions(accessToken, startDate, endDate)
+	count := 200
+	offset := 0
+	total := -1
 
-	if err != nil {
-		renderError(c, err)
-		return
+	accounts := make([]plaid.Account, 0)
+	transactions := make([]plaid.Transaction, 0)
+
+	log.Printf("Start date: %s\n", startDate)
+	log.Printf("End date: %s\n", endDate)
+
+	log.Printf("%10s\t%10s\t%10s\n", "Offset", "Count", "Total")
+	log.Printf("%10d\t%10d\t%10d\n", offset, count, total)
+
+	for total < 0 || offset < total {
+
+		options := plaid.GetTransactionsOptions{
+			StartDate: startDate,
+			EndDate:   endDate,
+			Count:     count,
+			Offset:    offset,
+		}
+
+		response, err := client.GetTransactionsWithOptions(accessToken, options)
+
+		if err != nil {
+			renderError(c, err)
+			return
+		}
+
+		accounts = append(accounts, response.Accounts...)
+		transactions = append(transactions, response.Transactions...)
+
+		total = response.TotalTransactions
+		offset += count
+
+		log.Printf("%10d\t%10d\t%10d\n", offset, count, total)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := saveToDb(ctx, response); err != nil {
-		renderError(c, err)
-		return
+	if STORE_DATA {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := saveToDb(ctx, accounts, transactions); err != nil {
+			renderError(c, err)
+			return
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"accounts":     response.Accounts,
-		"transactions": response.Transactions,
+		"accounts":     accounts,
+		"transactions": transactions,
 	})
 }
 

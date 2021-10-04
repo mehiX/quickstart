@@ -41,24 +41,26 @@ func init() {
 
 	err = mongoCli.Ping(ctx, nil)
 	if err != nil {
-		log.Fatal(err)
+		log.Println("No connection to MongoDB")
+		return
 	}
+
 	log.Println("Ping MongoDB successful")
 
 }
 
-func saveToDb(ctx context.Context, d plaid.GetTransactionsResponse) error {
+func saveToDb(ctx context.Context, accounts []plaid.Account, transactions []plaid.Transaction) error {
 
 	log.Println("Saving response")
 
-	res, err := saveAccounts(ctx, d.Accounts)
+	res, err := saveAccounts(ctx, accounts)
 	if err != nil {
 		log.Println("Error saving accounts", err)
 	} else {
 		log.Println("Accounts inserted: ", len(res.InsertedIDs))
 	}
 
-	res, err = saveTransactions(ctx, d.Transactions)
+	res, err = saveTransactions(ctx, transactions)
 	if err != nil {
 		log.Println("Error saving transactions", err)
 	} else {
