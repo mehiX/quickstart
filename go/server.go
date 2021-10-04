@@ -274,7 +274,7 @@ func transactions(c *gin.Context) {
 	const iso8601TimeFormat = "2006-01-02"
 	// pull transactions for the past year
 	endDate := time.Now().Local().Format(iso8601TimeFormat)
-	startDate := time.Now().Local().Add(-365 * 24 * time.Hour).Format(iso8601TimeFormat)
+	startDate := time.Now().Local().Add(-365 * 2 * 24 * time.Hour).Format(iso8601TimeFormat)
 
 	count := 200
 	offset := 0
