@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
+	"encoding/csv"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"reflect"
 	"strings"
 	"time"
 
@@ -22,6 +25,7 @@ var (
 	PLAID_REDIRECT_URI                = ""
 	APP_PORT                          = ""
 	client              *plaid.Client = nil
+	STORE_DATA                        = false
 )
 
 var environments = map[string]plaid.Environment{
@@ -78,20 +82,25 @@ func init() {
 	if err != nil {
 		panic(fmt.Errorf("unexpected error while initializing plaid client %w", err))
 	}
+
+	t := os.Getenv("STORE_DATA")
+	STORE_DATA = "true" == strings.ToLower(t) || "yes" == strings.ToLower(t)
+
+	log.Printf("Store data: %v\n", STORE_DATA)
 }
 
 func main() {
 	r := gin.Default()
 
 	r.POST("/api/info", info)
-	
+
 	// For OAuth flows, the process looks as follows.
 	// 1. Create a link token with the redirectURI (as white listed at https://dashboard.plaid.com/team/api).
 	// 2. Once the flow succeeds, Plaid Link will redirect to redirectURI with
 	// additional parameters (as required by OAuth standards and Plaid).
 	// 3. Re-initialize with the link token (from step 1) and the full received redirect URI
 	// from step 2.
-	
+
 	r.POST("/api/set_access_token", getAccessToken)
 	r.POST("/api/create_link_token_for_payment", createLinkTokenForPayment)
 	r.GET("/api/auth", auth)
@@ -108,6 +117,8 @@ func main() {
 	r.GET("/api/investment_transactions", investmentTransactions)
 	r.GET("/api/holdings", holdings)
 	r.GET("/api/assets", assets)
+	r.GET("/api/all/transactions/csv", allTransactionsAsCsv)
+	r.GET("/api/all/balances/csv", allAccountsAsCsv)
 
 	err := r.Run(":" + APP_PORT)
 	if err != nil {
@@ -260,21 +271,241 @@ func identity(c *gin.Context) {
 }
 
 func transactions(c *gin.Context) {
-	// pull transactions for the past 30 days
-	endDate := time.Now().Local().Format("2006-01-02")
-	startDate := time.Now().Local().Add(-30 * 24 * time.Hour).Format("2006-01-02")
+	const iso8601TimeFormat = "2006-01-02"
+	// pull transactions for the past year
+	endDate := time.Now().Local().Format(iso8601TimeFormat)
+	startDate := time.Now().Local().Add(-365 * 2 * 24 * time.Hour).Format(iso8601TimeFormat)
 
-	response, err := client.GetTransactions(accessToken, startDate, endDate)
+	count := 200
+	offset := 0
+	total := -1
 
+	accounts := make([]plaid.Account, 0)
+	transactions := make([]plaid.Transaction, 0)
+
+	log.Printf("Start date: %s\n", startDate)
+	log.Printf("End date: %s\n", endDate)
+
+	log.Printf("%10s\t%10s\t%10s\n", "Offset", "Count", "Total")
+	log.Printf("%10d\t%10d\t%10d\n", offset, count, total)
+
+	for total < 0 || offset < total {
+
+		options := plaid.GetTransactionsOptions{
+			StartDate: startDate,
+			EndDate:   endDate,
+			Count:     count,
+			Offset:    offset,
+		}
+
+		response, err := client.GetTransactionsWithOptions(accessToken, options)
+
+		if err != nil {
+			renderError(c, err)
+			return
+		}
+
+		if total < 0 {
+			// save the accounts only once
+			accounts = append(accounts, response.Accounts...)
+		}
+
+		transactions = append(transactions, response.Transactions...)
+
+		total = response.TotalTransactions
+		offset += count
+
+		log.Printf("%10d\t%10d\t%10d\n", offset, count, total)
+	}
+
+	if STORE_DATA {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := saveToDb(ctx, accounts, transactions); err != nil {
+			renderError(c, err)
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"accounts":     accounts,
+		"transactions": transactions,
+	})
+}
+
+func allAccountsAsCsv(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	all, err := fetchAllAccounts(ctx)
 	if err != nil {
 		renderError(c, err)
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"accounts":     response.Accounts,
-		"transactions": response.Transactions,
-	})
+	c.Header("Content-Type", "text/csv")
+
+	cw := csv.NewWriter(c.Writer)
+	cw.Comma = '#'
+
+	writeCsvHeaderAccounts(cw)
+
+	for _, a := range all {
+		var rec []string
+		rec = append(rec, a.AccountID)
+		rec = append(rec, fmt.Sprintf("%f", a.Balances.Available))
+		rec = append(rec, fmt.Sprintf("%f", a.Balances.Current))
+		rec = append(rec, fmt.Sprintf("%f", a.Balances.Limit))
+		rec = append(rec, a.Balances.ISOCurrencyCode)
+		rec = append(rec, a.Balances.UnofficialCurrencyCode)
+		rec = append(rec, a.Mask)
+		rec = append(rec, a.Name)
+		rec = append(rec, a.OfficialName)
+		rec = append(rec, a.Subtype)
+		rec = append(rec, a.Type)
+		rec = append(rec, a.VerificationStatus)
+
+		cw.Write(rec)
+	}
+
+	cw.Flush()
+}
+
+func allTransactionsAsCsv(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	all, err := fetchAllTransactions(ctx)
+	if err != nil {
+		renderError(c, err)
+		return
+	}
+
+	c.Header("Content-Type", "text/csv")
+
+	cw := csv.NewWriter(c.Writer)
+	cw.Comma = '#'
+	// write Header
+	writeCsvHeaderTransactions(cw)
+	// write records
+	for _, t := range all {
+		var rec []string
+		rec = append(rec, t.AccountID)
+		rec = append(rec, fmt.Sprintf("%f", t.Amount))
+		rec = append(rec, t.ISOCurrencyCode)
+		rec = append(rec, t.UnofficialCurrencyCode)
+		rec = append(rec, strings.Join(t.Category, ","))
+		rec = append(rec, t.CategoryID)
+		rec = append(rec, t.Date)
+		rec = append(rec, t.AuthorizedDate)
+
+		rec = append(rec, t.Location.Address)
+		rec = append(rec, t.Location.City)
+		rec = append(rec, fmt.Sprintf("%f", t.Location.Lat))
+		rec = append(rec, fmt.Sprintf("%f", t.Location.Lon))
+		rec = append(rec, t.Location.Region)
+		rec = append(rec, t.Location.StoreNumber)
+		rec = append(rec, t.Location.PostalCode)
+		rec = append(rec, t.Location.Country)
+
+		rec = append(rec, t.Name)
+		rec = append(rec, t.PaymentMeta.ByOrderOf)
+		rec = append(rec, t.PaymentMeta.Payee)
+		rec = append(rec, t.PaymentMeta.Payer)
+		rec = append(rec, t.PaymentMeta.PaymentMethod)
+		rec = append(rec, t.PaymentMeta.PaymentProcessor)
+		rec = append(rec, t.PaymentMeta.PPDID)
+		rec = append(rec, t.PaymentMeta.Reason)
+		rec = append(rec, t.PaymentMeta.ReferenceNumber)
+
+		rec = append(rec, t.PaymentChannel)
+		rec = append(rec, fmt.Sprintf("%v", t.Pending))
+
+		rec = append(rec, t.PendingTransactionID)
+		rec = append(rec, t.AccountOwner)
+		rec = append(rec, t.ID)
+		rec = append(rec, t.Type)
+		rec = append(rec, t.Code)
+
+		cw.Write(rec)
+	}
+
+	cw.Flush()
+
+}
+
+func writeCsvHeaderAccounts(cw *csv.Writer) {
+
+	var rec []string
+
+	rec = addFieldsByJsonTag(
+		rec,
+		reflect.TypeOf(plaid.Account{}),
+		[]string{"AccountID"},
+	)
+
+	rec = addFieldsByJsonTag(
+		rec,
+		reflect.TypeOf(plaid.AccountBalances{}),
+		[]string{"Available", "Current", "Limit", "ISOCurrencyCode", "UnofficialCurrencyCode"},
+	)
+
+	rec = addFieldsByJsonTag(
+		rec,
+		reflect.TypeOf(plaid.Account{}),
+		[]string{"Mask", "Name", "OfficialName", "Subtype", "Type", "VerificationStatus"},
+	)
+
+	cw.Write(rec)
+}
+
+func writeCsvHeaderTransactions(cw *csv.Writer) {
+	var rec []string
+
+	rec = addFieldsByJsonTag(
+		rec,
+		reflect.TypeOf(plaid.Transaction{}),
+		[]string{"AccountID", "Amount", "ISOCurrencyCode", "UnofficialCurrencyCode", "Category", "CategoryID", "Date", "AuthorizedDate"},
+	)
+
+	rec = addFieldsByJsonTag(
+		rec,
+		reflect.TypeOf(plaid.Location{}),
+		[]string{"Address", "City", "Lat", "Lon", "Region", "StoreNumber", "PostalCode", "Country"},
+	)
+
+	rec = addFieldsByJsonTag(
+		rec,
+		reflect.TypeOf(plaid.Transaction{}),
+		[]string{"Name"},
+	)
+
+	rec = addFieldsByJsonTag(
+		rec,
+		reflect.TypeOf(plaid.PaymentMeta{}),
+		[]string{"ByOrderOf", "Payee", "Payer", "PaymentMethod", "PaymentProcessor", "PPDID", "Reason", "ReferenceNumber"},
+	)
+
+	rec = addFieldsByJsonTag(
+		rec,
+		reflect.TypeOf(plaid.Transaction{}),
+		[]string{"PaymentChannel", "Pending", "PendingTransactionID", "AccountOwner", "ID", "Type", "Code"},
+	)
+
+	cw.Write(rec)
+}
+
+func addFieldsByJsonTag(rec []string, tType reflect.Type, fields []string) []string {
+	for _, fName := range fields {
+		f, ok := tType.FieldByName(fName)
+		if !ok {
+			rec = append(rec, fName)
+		} else {
+			rec = append(rec, f.Tag.Get("json"))
+		}
+	}
+
+	return rec
 }
 
 // This functionality is only relevant for the UK Payment Initiation product.

@@ -7,7 +7,7 @@ x-environment:
   PLAID_COUNTRY_CODES: ${PLAID_COUNTRY_CODES}
   PLAID_REDIRECT_URI: ${PLAID_REDIRECT_URI}
   PLAID_ENV: ${PLAID_ENV}
-  STORE_DATA: ${STORE_DATA}
+  STORE_DATA: "yes"
 services:
   go:
     networks:
@@ -76,6 +76,8 @@ services:
   frontend:
     environment:
       - REACT_APP_API_HOST
+      - HOST
+      - PUBLIC_URL
     networks:
       - "quickstart"
     build:
@@ -90,6 +92,7 @@ services:
       - traefik.http.routers.plaid.tls.certresolver=plaid
       - traefik.http.services.plaid.loadbalancer.server.port=3000
       - traefik.http.services.plaid.loadbalancer.passHostHeader=true
+    hostname: ${HOST}
 networks:
   quickstart:
     name: quickstart

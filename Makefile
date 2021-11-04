@@ -9,7 +9,7 @@ SUCCESS_MESSAGE := "✅ $(language) quickstart is running on http://localhost:30
 
 .PHONY: up
 up:
-	REACT_APP_API_HOST=https://plaid.goodfun.io \
+	REACT_APP_API_HOST=http://$(language):8000 \
 	$(DOCKER_COMPOSE) \
 		$(DOCKER_COMPOSE_YML) \
 		$@ --build --detach --remove-orphans \
