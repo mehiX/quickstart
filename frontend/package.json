@@ -10,6 +10,7 @@
     "@types/react": "^16.9.53",
     "@types/react-dom": "^16.9.8",
     "classnames": "^2.2.6",
+    "firebase": "^9.4.1",
     "plaid": "^9.2.0",
     "plaid-threads": "^11.2.3",
     "react": "^16.14.0",
