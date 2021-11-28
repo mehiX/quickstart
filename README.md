@@ -1,6 +1,6 @@
 # Plaid quickstart
 
-This repository accompanies Plaid's [**quickstart guide**][quickstart].
+This repository is an adaptation of Plaid's [**quickstart guide**][quickstart].
 
 Here you'll find full example integration apps using our [**client libraries**][libraries]:
 
@@ -38,14 +38,14 @@ Here you'll find full example integration apps using our [**client libraries**][
 Using https:
 
 ```bash
-git clone https://github.com/plaid/quickstart
+git clone https://github.com/mehix/quickstart
 cd quickstart
 ```
 
 Alternatively, if you use ssh:
 
 ```bash
-git clone git@github.com:plaid/quickstart.git
+git clone git@github.com:mehix/quickstart.git
 cd quickstart
 ```
 
@@ -54,7 +54,7 @@ cd quickstart
 Note - because this repository makes use of symbolic links, to run this on a Windows machine, make sure you have checked the "enable symbolic links" box when you download Git to your local machine. Then you can run the above commands to clone the quickstart. Otherwise, you may open your Git Bash terminal as an administrator and use the following command when cloning the project
 
 ```bash
-git clone -c core.symlinks=true https://github.com/plaid/quickstart
+git clone -c core.symlinks=true https://github.com/mehix/quickstart
 ```
 
 ## 2. Set up your environment variables
