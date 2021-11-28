@@ -21,15 +21,15 @@ import (
 )
 
 var (
-	PLAID_CLIENT_ID                   = ""
-	PLAID_SECRET                      = ""
-	PLAID_ENV                         = ""
-	PLAID_PRODUCTS                    = ""
-	PLAID_COUNTRY_CODES               = ""
-	PLAID_REDIRECT_URI                = ""
-	APP_PORT                          = ""
-	client              *plaid.Client = nil
-	STORE_DATA                        = false
+	PLAID_CLIENT_ID                      = ""
+	PLAID_SECRET                         = ""
+	PLAID_ENV                            = ""
+	PLAID_PRODUCTS                       = ""
+	PLAID_COUNTRY_CODES                  = ""
+	PLAID_REDIRECT_URI                   = ""
+	APP_PORT                             = ""
+	client              *plaid.APIClient = nil
+	STORE_DATA                           = false
 )
 
 var environments = map[string]plaid.Environment{
@@ -86,8 +86,8 @@ func init() {
 	configuration.UseEnvironment(environments[PLAID_ENV])
 	client = plaid.NewAPIClient(configuration)
 
-	t := os.Getenv("STORE_DATA")
-	STORE_DATA = "true" == strings.ToLower(t) || "yes" == strings.ToLower(t)
+	t := strings.ToLower(os.Getenv("STORE_DATA"))
+	STORE_DATA = t == "true" || t == "yes"
 
 	log.Printf("Store data: %v\n", STORE_DATA)
 }
@@ -169,6 +169,9 @@ func getAccessToken(c *gin.Context) {
 	itemID = exchangePublicTokenResp.GetItemId()
 	if itemExists(strings.Split(PLAID_PRODUCTS, ","), "transfer") {
 		transferID, err = authorizeAndCreateTransfer(ctx, client, accessToken)
+		if err != nil {
+			log.Println(err)
+		}
 	}
 
 	fmt.Println("public token: " + publicToken)
@@ -333,11 +336,11 @@ func transactions(c *gin.Context) {
 	endDate := time.Now().Local().Format(iso8601TimeFormat)
 	startDate := time.Now().Local().Add(-365 * 2 * 24 * time.Hour).Format(iso8601TimeFormat)
 
-	count := 200
-	offset := 0
-	total := -1
+	count := int32(200)
+	offset := int32(0)
+	total := int32(-1)
 
-	accounts := make([]plaid.Account, 0)
+	accounts := make([]plaid.AccountBase, 0)
 	transactions := make([]plaid.Transaction, 0)
 
 	log.Printf("Start date: %s\n", startDate)
@@ -346,21 +349,24 @@ func transactions(c *gin.Context) {
 	log.Printf("%10s\t%10s\t%10s\n", "Offset", "Count", "Total")
 	log.Printf("%10d\t%10d\t%10d\n", offset, count, total)
 
+	ctx := context.Background()
+
 	for total < 0 || offset < total {
 
-		options := plaid.GetTransactionsOptions{
-			StartDate: startDate,
-			EndDate:   endDate,
-			Count:     count,
-			Offset:    offset,
-		}
+		transGetReq := *plaid.NewTransactionsGetRequest(
+			accessToken,
+			startDate,
+			endDate,
+		)
 
-		transactionsResp, _, err := client.PlaidApi.TransactionsGet(ctx).TransactionsGetRequest(
-			*plaid.NewTransactionsGetRequest(
-				accessToken,
-				startDate,
-				endDate,
-			),
+		options := *plaid.NewTransactionsGetRequestOptions()
+		options.Count = &count
+		options.Offset = &offset
+
+		transGetReq.Options = &options
+
+		response, _, err := client.PlaidApi.TransactionsGet(ctx).TransactionsGetRequest(
+			transGetReq,
 		).Execute()
 		//			response, err := client.GetTransactionsWithOptions(accessToken, options)
 
@@ -416,18 +422,18 @@ func allAccountsAsCsv(c *gin.Context) {
 
 	for _, a := range all {
 		var rec []string
-		rec = append(rec, a.AccountID)
-		rec = append(rec, fmt.Sprintf("%f", a.Balances.Available))
-		rec = append(rec, fmt.Sprintf("%f", a.Balances.Current))
-		rec = append(rec, fmt.Sprintf("%f", a.Balances.Limit))
-		rec = append(rec, a.Balances.ISOCurrencyCode)
-		rec = append(rec, a.Balances.UnofficialCurrencyCode)
-		rec = append(rec, a.Mask)
+		rec = append(rec, a.AccountId)
+		rec = append(rec, fmt.Sprintf("%f", a.Balances.GetAvailable()))
+		rec = append(rec, fmt.Sprintf("%f", a.Balances.GetCurrent()))
+		rec = append(rec, fmt.Sprintf("%f", a.Balances.GetLimit()))
+		rec = append(rec, a.Balances.GetIsoCurrencyCode())
+		rec = append(rec, a.Balances.GetUnofficialCurrencyCode())
+		rec = append(rec, a.GetMask())
 		rec = append(rec, a.Name)
-		rec = append(rec, a.OfficialName)
-		rec = append(rec, a.Subtype)
-		rec = append(rec, a.Type)
-		rec = append(rec, a.VerificationStatus)
+		rec = append(rec, a.GetOfficialName())
+		rec = append(rec, string(a.GetSubtype()))
+		rec = append(rec, string(a.GetType()))
+		rec = append(rec, a.GetVerificationStatus())
 
 		cw.Write(rec)
 	}
@@ -454,42 +460,43 @@ func allTransactionsAsCsv(c *gin.Context) {
 	// write records
 	for _, t := range all {
 		var rec []string
-		rec = append(rec, t.AccountID)
+		rec = append(rec, t.AccountId)
 		rec = append(rec, fmt.Sprintf("%f", t.Amount))
-		rec = append(rec, t.ISOCurrencyCode)
-		rec = append(rec, t.UnofficialCurrencyCode)
+		rec = append(rec, t.GetIsoCurrencyCode())
+		rec = append(rec, t.GetUnofficialCurrencyCode())
 		rec = append(rec, strings.Join(t.Category, ","))
-		rec = append(rec, t.CategoryID)
+		rec = append(rec, t.GetCategoryId())
 		rec = append(rec, t.Date)
-		rec = append(rec, t.AuthorizedDate)
+		rec = append(rec, t.GetAuthorizedDate())
 
-		rec = append(rec, t.Location.Address)
-		rec = append(rec, t.Location.City)
-		rec = append(rec, fmt.Sprintf("%f", t.Location.Lat))
-		rec = append(rec, fmt.Sprintf("%f", t.Location.Lon))
-		rec = append(rec, t.Location.Region)
-		rec = append(rec, t.Location.StoreNumber)
-		rec = append(rec, t.Location.PostalCode)
-		rec = append(rec, t.Location.Country)
+		rec = append(rec, t.Location.GetAddress())
+		rec = append(rec, t.Location.GetCity())
+		rec = append(rec, fmt.Sprintf("%f", t.Location.GetLat()))
+		rec = append(rec, fmt.Sprintf("%f", t.Location.GetLon()))
+		rec = append(rec, t.Location.GetRegion())
+		rec = append(rec, t.Location.GetStoreNumber())
+		rec = append(rec, t.Location.GetPostalCode())
+		rec = append(rec, t.Location.GetCountry())
 
 		rec = append(rec, t.Name)
-		rec = append(rec, t.PaymentMeta.ByOrderOf)
-		rec = append(rec, t.PaymentMeta.Payee)
-		rec = append(rec, t.PaymentMeta.Payer)
-		rec = append(rec, t.PaymentMeta.PaymentMethod)
-		rec = append(rec, t.PaymentMeta.PaymentProcessor)
-		rec = append(rec, t.PaymentMeta.PPDID)
-		rec = append(rec, t.PaymentMeta.Reason)
-		rec = append(rec, t.PaymentMeta.ReferenceNumber)
+		pm := t.GetPaymentMeta()
+		rec = append(rec, *pm.ByOrderOf.Get())
+		rec = append(rec, pm.GetPayee())
+		rec = append(rec, pm.GetPayer())
+		rec = append(rec, pm.GetPaymentMethod())
+		rec = append(rec, pm.GetPaymentProcessor())
+		rec = append(rec, pm.GetPpdId())
+		rec = append(rec, pm.GetReason())
+		rec = append(rec, pm.GetReferenceNumber())
 
 		rec = append(rec, t.PaymentChannel)
 		rec = append(rec, fmt.Sprintf("%v", t.Pending))
 
-		rec = append(rec, t.PendingTransactionID)
-		rec = append(rec, t.AccountOwner)
-		rec = append(rec, t.ID)
-		rec = append(rec, t.Type)
-		rec = append(rec, t.Code)
+		rec = append(rec, t.GetPendingTransactionId())
+		rec = append(rec, t.GetAccountOwner())
+		rec = append(rec, t.TransactionId)
+		rec = append(rec, *t.TransactionType)
+		rec = append(rec, string(t.GetTransactionCode()))
 
 		cw.Write(rec)
 	}
@@ -504,19 +511,19 @@ func writeCsvHeaderAccounts(cw *csv.Writer) {
 
 	rec = addFieldsByJsonTag(
 		rec,
-		reflect.TypeOf(plaid.Account{}),
-		[]string{"AccountID"},
+		reflect.TypeOf(plaid.AccountBase{}),
+		[]string{"AccountId"},
 	)
 
 	rec = addFieldsByJsonTag(
 		rec,
-		reflect.TypeOf(plaid.AccountBalances{}),
-		[]string{"Available", "Current", "Limit", "ISOCurrencyCode", "UnofficialCurrencyCode"},
+		reflect.TypeOf(plaid.AccountBalance{}),
+		[]string{"Available", "Current", "Limit", "IsoCurrencyCode", "UnofficialCurrencyCode"},
 	)
 
 	rec = addFieldsByJsonTag(
 		rec,
-		reflect.TypeOf(plaid.Account{}),
+		reflect.TypeOf(plaid.AccountBase{}),
 		[]string{"Mask", "Name", "OfficialName", "Subtype", "Type", "VerificationStatus"},
 	)
 

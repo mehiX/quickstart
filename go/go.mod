@@ -1,4 +1,4 @@
-module github.com/mehix/quickstart
+module github.com/plaid/quickstart
 
 go 1.12
 
