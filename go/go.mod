@@ -1,10 +1,10 @@
-module github.com/plaid/quickstart
+module github.com/mehix/quickstart
 
 go 1.12
 
 require (
-	github.com/gin-gonic/gin v1.4.0
+	github.com/gin-gonic/gin v1.7.7
 	github.com/joho/godotenv v1.3.0
-	github.com/plaid/plaid-go v0.0.0-20200709194030-6e8fcb95e5e9
+	github.com/plaid/plaid-go v1.2.0
 	go.mongodb.org/mongo-driver v1.7.1
 )
