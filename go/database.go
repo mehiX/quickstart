@@ -49,7 +49,7 @@ func init() {
 
 }
 
-func saveToDb(ctx context.Context, accounts []plaid.Account, transactions []plaid.Transaction) error {
+func saveToDb(ctx context.Context, accounts []plaid.AccountBase, transactions []plaid.Transaction) error {
 
 	log.Println("Saving response")
 
@@ -70,7 +70,7 @@ func saveToDb(ctx context.Context, accounts []plaid.Account, transactions []plai
 	return nil
 }
 
-func saveAccounts(ctx context.Context, accounts []plaid.Account) (*mongo.InsertManyResult, error) {
+func saveAccounts(ctx context.Context, accounts []plaid.AccountBase) (*mongo.InsertManyResult, error) {
 	accountsCollection := mongoCli.Database("plaid-trans").Collection("accounts")
 
 	var data []interface{}
@@ -116,7 +116,7 @@ func fetchAllTransactions(ctx context.Context) ([]plaid.Transaction, error) {
 
 }
 
-func fetchAllAccounts(ctx context.Context) ([]plaid.Account, error) {
+func fetchAllAccounts(ctx context.Context) ([]plaid.AccountBase, error) {
 	ac := mongoCli.Database("plaid-trans").Collection("accounts")
 
 	curr, err := ac.Find(ctx, bson.M{})
@@ -125,10 +125,10 @@ func fetchAllAccounts(ctx context.Context) ([]plaid.Account, error) {
 	}
 	defer curr.Close(context.Background())
 
-	all := make([]plaid.Account, 0)
+	all := make([]plaid.AccountBase, 0)
 
 	for curr.Next(context.Background()) {
-		var a plaid.Account
+		var a plaid.AccountBase
 		if err := curr.Decode(&a); err != nil {
 			log.Println(err)
 		} else {

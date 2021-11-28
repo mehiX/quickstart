@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/csv"
+	"errors"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -13,19 +17,19 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
-	"github.com/plaid/plaid-go/plaid"
+	plaid "github.com/plaid/plaid-go/plaid"
 )
 
 var (
-	PLAID_CLIENT_ID                   = ""
-	PLAID_SECRET                      = ""
-	PLAID_ENV                         = ""
-	PLAID_PRODUCTS                    = ""
-	PLAID_COUNTRY_CODES               = ""
-	PLAID_REDIRECT_URI                = ""
-	APP_PORT                          = ""
-	client              *plaid.Client = nil
-	STORE_DATA                        = false
+	PLAID_CLIENT_ID                      = ""
+	PLAID_SECRET                         = ""
+	PLAID_ENV                            = ""
+	PLAID_PRODUCTS                       = ""
+	PLAID_COUNTRY_CODES                  = ""
+	PLAID_REDIRECT_URI                   = ""
+	APP_PORT                             = ""
+	client              *plaid.APIClient = nil
+	STORE_DATA                           = false
 )
 
 var environments = map[string]plaid.Environment{
@@ -37,6 +41,9 @@ var environments = map[string]plaid.Environment{
 func init() {
 	// load env vars from .env file
 	err := godotenv.Load()
+	if err != nil {
+		fmt.Println("Error when loading environment variables from .env file %w", err)
+	}
 
 	// set constants from env
 	PLAID_CLIENT_ID = os.Getenv("PLAID_CLIENT_ID")
@@ -73,18 +80,14 @@ func init() {
 	}
 
 	// create Plaid client
-	client, err = plaid.NewClient(plaid.ClientOptions{
-		PLAID_CLIENT_ID,
-		PLAID_SECRET,
-		environments[PLAID_ENV],
-		&http.Client{},
-	})
-	if err != nil {
-		panic(fmt.Errorf("unexpected error while initializing plaid client %w", err))
-	}
+	configuration := plaid.NewConfiguration()
+	configuration.AddDefaultHeader("PLAID-CLIENT-ID", PLAID_CLIENT_ID)
+	configuration.AddDefaultHeader("PLAID-SECRET", PLAID_SECRET)
+	configuration.UseEnvironment(environments[PLAID_ENV])
+	client = plaid.NewAPIClient(configuration)
 
-	t := os.Getenv("STORE_DATA")
-	STORE_DATA = "true" == strings.ToLower(t) || "yes" == strings.ToLower(t)
+	t := strings.ToLower(os.Getenv("STORE_DATA"))
+	STORE_DATA = t == "true" || t == "yes"
 
 	log.Printf("Store data: %v\n", STORE_DATA)
 }
@@ -119,6 +122,7 @@ func main() {
 	r.GET("/api/assets", assets)
 	r.GET("/api/all/transactions/csv", allTransactionsAsCsv)
 	r.GET("/api/all/balances/csv", allAccountsAsCsv)
+	r.GET("/api/transfer", transfer)
 
 	err := r.Run(":" + APP_PORT)
 	if err != nil {
@@ -133,24 +137,42 @@ var itemID string
 
 var paymentID string
 
-func renderError(c *gin.Context, err error) {
-	if plaidError, ok := err.(plaid.Error); ok {
+// The transfer_id is only relevant for the Transfer ACH product.
+// We store the transfer_id in memory - in production, store it in a secure
+// persistent data store
+var transferID string
+
+func renderError(c *gin.Context, originalErr error) {
+	if plaidError, err := plaid.ToPlaidError(originalErr); err == nil {
 		// Return 200 and allow the front end to render the error.
 		c.JSON(http.StatusOK, gin.H{"error": plaidError})
 		return
 	}
-	c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+
+	c.JSON(http.StatusInternalServerError, gin.H{"error": originalErr.Error()})
 }
 
 func getAccessToken(c *gin.Context) {
 	publicToken := c.PostForm("public_token")
-	response, err := client.ExchangePublicToken(publicToken)
+	ctx := context.Background()
+
+	// exchange the public_token for an access_token
+	exchangePublicTokenResp, _, err := client.PlaidApi.ItemPublicTokenExchange(ctx).ItemPublicTokenExchangeRequest(
+		*plaid.NewItemPublicTokenExchangeRequest(publicToken),
+	).Execute()
 	if err != nil {
 		renderError(c, err)
 		return
 	}
-	accessToken = response.AccessToken
-	itemID = response.ItemID
+
+	accessToken = exchangePublicTokenResp.GetAccessToken()
+	itemID = exchangePublicTokenResp.GetItemId()
+	if itemExists(strings.Split(PLAID_PRODUCTS, ","), "transfer") {
+		transferID, err = authorizeAndCreateTransfer(ctx, client, accessToken)
+		if err != nil {
+			log.Println(err)
+		}
+	}
 
 	fmt.Println("public token: " + publicToken)
 	fmt.Println("access token: " + accessToken)
@@ -167,35 +189,43 @@ func getAccessToken(c *gin.Context) {
 // information will be associated with the link token, and will not have to be
 // passed in again when we initialize Plaid Link.
 func createLinkTokenForPayment(c *gin.Context) {
-	recipientCreateResp, err := client.CreatePaymentRecipient(
-		"Harry Potter",
-		"GB33BUKB20201555555555",
-		&plaid.PaymentRecipientAddress{
-			Street:     []string{"4 Privet Drive"},
-			City:       "Little Whinging",
-			PostalCode: "11111",
-			Country:    "GB",
-		})
+	ctx := context.Background()
+
+	// Create payment recipient
+	paymentRecipientRequest := plaid.NewPaymentInitiationRecipientCreateRequest("Harry Potter")
+	paymentRecipientRequest.SetIban("GB33BUKB20201555555555")
+	paymentRecipientRequest.SetAddress(*plaid.NewPaymentInitiationAddress(
+		[]string{"4 Privet Drive"},
+		"Little Whinging",
+		"11111",
+		"GB",
+	))
+	paymentRecipientCreateResp, _, err := client.PlaidApi.PaymentInitiationRecipientCreate(ctx).PaymentInitiationRecipientCreateRequest(*paymentRecipientRequest).Execute()
 	if err != nil {
 		renderError(c, err)
 		return
 	}
-	paymentCreateResp, err := client.CreatePayment(recipientCreateResp.RecipientID, "paymentRef", plaid.PaymentAmount{
-		Currency: "GBP",
-		Value:    12.34,
-	})
+
+	// Create payment
+	paymentCreateRequest := plaid.NewPaymentInitiationPaymentCreateRequest(
+		paymentRecipientCreateResp.GetRecipientId(),
+		"paymentRef",
+		*plaid.NewPaymentAmount("GBP", 1.34),
+	)
+	paymentCreateResp, _, err := client.PlaidApi.PaymentInitiationPaymentCreate(ctx).PaymentInitiationPaymentCreateRequest(*paymentCreateRequest).Execute()
 	if err != nil {
 		renderError(c, err)
 		return
 	}
-	paymentID = paymentCreateResp.PaymentID
+
+	paymentID = paymentCreateResp.GetPaymentId()
 	fmt.Println("payment id: " + paymentID)
 
-	linkToken, tokenCreateErr := linkTokenCreate(&plaid.PaymentInitiation{
-		PaymentID: paymentID,
-	})
-	if tokenCreateErr != nil {
-		renderError(c, tokenCreateErr)
+	linkTokenCreateReqPaymentInitiation := plaid.NewLinkTokenCreateRequestPaymentInitiation(paymentID)
+	linkToken, err := linkTokenCreate(linkTokenCreateReqPaymentInitiation)
+	if err != nil {
+		renderError(c, err)
+		return
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"link_token": linkToken,
@@ -203,70 +233,100 @@ func createLinkTokenForPayment(c *gin.Context) {
 }
 
 func auth(c *gin.Context) {
-	response, err := client.GetAuth(accessToken)
+	ctx := context.Background()
+
+	authGetResp, _, err := client.PlaidApi.AuthGet(ctx).AuthGetRequest(
+		*plaid.NewAuthGetRequest(accessToken),
+	).Execute()
+
 	if err != nil {
 		renderError(c, err)
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"accounts": response.Accounts,
-		"numbers":  response.Numbers,
+		"accounts": authGetResp.GetAccounts(),
+		"numbers":  authGetResp.GetNumbers(),
 	})
 }
 
 func accounts(c *gin.Context) {
-	response, err := client.GetAccounts(accessToken)
+	ctx := context.Background()
+
+	accountsGetResp, _, err := client.PlaidApi.AccountsGet(ctx).AccountsGetRequest(
+		*plaid.NewAccountsGetRequest(accessToken),
+	).Execute()
+
 	if err != nil {
 		renderError(c, err)
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"accounts": response.Accounts,
+		"accounts": accountsGetResp.GetAccounts(),
 	})
 }
 
 func balance(c *gin.Context) {
-	response, err := client.GetBalances(accessToken)
+	ctx := context.Background()
+
+	balancesGetResp, _, err := client.PlaidApi.AccountsBalanceGet(ctx).AccountsBalanceGetRequest(
+		*plaid.NewAccountsBalanceGetRequest(accessToken),
+	).Execute()
+
 	if err != nil {
 		renderError(c, err)
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"accounts": response.Accounts,
+		"accounts": balancesGetResp.GetAccounts(),
 	})
 }
 
 func item(c *gin.Context) {
-	response, err := client.GetItem(accessToken)
+	ctx := context.Background()
+
+	itemGetResp, _, err := client.PlaidApi.ItemGet(ctx).ItemGetRequest(
+		*plaid.NewItemGetRequest(accessToken),
+	).Execute()
+
 	if err != nil {
 		renderError(c, err)
 		return
 	}
 
-	institution, err := client.GetInstitutionByID(response.Item.InstitutionID)
+	institutionGetByIdResp, _, err := client.PlaidApi.InstitutionsGetById(ctx).InstitutionsGetByIdRequest(
+		*plaid.NewInstitutionsGetByIdRequest(
+			*itemGetResp.GetItem().InstitutionId.Get(),
+			convertCountryCodes(strings.Split(PLAID_COUNTRY_CODES, ",")),
+		),
+	).Execute()
+
 	if err != nil {
 		renderError(c, err)
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"item":        response.Item,
-		"institution": institution.Institution,
+		"item":        itemGetResp.GetItem(),
+		"institution": institutionGetByIdResp.GetInstitution(),
 	})
 }
 
 func identity(c *gin.Context) {
-	response, err := client.GetIdentity(accessToken)
+	ctx := context.Background()
+
+	identityGetResp, _, err := client.PlaidApi.IdentityGet(ctx).IdentityGetRequest(
+		*plaid.NewIdentityGetRequest(accessToken),
+	).Execute()
 	if err != nil {
 		renderError(c, err)
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"identity": response.Accounts,
+		"identity": identityGetResp.GetAccounts(),
 	})
 }
 
@@ -276,11 +336,11 @@ func transactions(c *gin.Context) {
 	endDate := time.Now().Local().Format(iso8601TimeFormat)
 	startDate := time.Now().Local().Add(-365 * 2 * 24 * time.Hour).Format(iso8601TimeFormat)
 
-	count := 200
-	offset := 0
-	total := -1
+	count := int32(200)
+	offset := int32(0)
+	total := int32(-1)
 
-	accounts := make([]plaid.Account, 0)
+	accounts := make([]plaid.AccountBase, 0)
 	transactions := make([]plaid.Transaction, 0)
 
 	log.Printf("Start date: %s\n", startDate)
@@ -289,16 +349,26 @@ func transactions(c *gin.Context) {
 	log.Printf("%10s\t%10s\t%10s\n", "Offset", "Count", "Total")
 	log.Printf("%10d\t%10d\t%10d\n", offset, count, total)
 
+	ctx := context.Background()
+
 	for total < 0 || offset < total {
 
-		options := plaid.GetTransactionsOptions{
-			StartDate: startDate,
-			EndDate:   endDate,
-			Count:     count,
-			Offset:    offset,
-		}
+		transGetReq := *plaid.NewTransactionsGetRequest(
+			accessToken,
+			startDate,
+			endDate,
+		)
 
-		response, err := client.GetTransactionsWithOptions(accessToken, options)
+		options := *plaid.NewTransactionsGetRequestOptions()
+		options.Count = &count
+		options.Offset = &offset
+
+		transGetReq.Options = &options
+
+		response, _, err := client.PlaidApi.TransactionsGet(ctx).TransactionsGetRequest(
+			transGetReq,
+		).Execute()
+		//			response, err := client.GetTransactionsWithOptions(accessToken, options)
 
 		if err != nil {
 			renderError(c, err)
@@ -352,18 +422,18 @@ func allAccountsAsCsv(c *gin.Context) {
 
 	for _, a := range all {
 		var rec []string
-		rec = append(rec, a.AccountID)
-		rec = append(rec, fmt.Sprintf("%f", a.Balances.Available))
-		rec = append(rec, fmt.Sprintf("%f", a.Balances.Current))
-		rec = append(rec, fmt.Sprintf("%f", a.Balances.Limit))
-		rec = append(rec, a.Balances.ISOCurrencyCode)
-		rec = append(rec, a.Balances.UnofficialCurrencyCode)
-		rec = append(rec, a.Mask)
+		rec = append(rec, a.AccountId)
+		rec = append(rec, fmt.Sprintf("%f", a.Balances.GetAvailable()))
+		rec = append(rec, fmt.Sprintf("%f", a.Balances.GetCurrent()))
+		rec = append(rec, fmt.Sprintf("%f", a.Balances.GetLimit()))
+		rec = append(rec, a.Balances.GetIsoCurrencyCode())
+		rec = append(rec, a.Balances.GetUnofficialCurrencyCode())
+		rec = append(rec, a.GetMask())
 		rec = append(rec, a.Name)
-		rec = append(rec, a.OfficialName)
-		rec = append(rec, a.Subtype)
-		rec = append(rec, a.Type)
-		rec = append(rec, a.VerificationStatus)
+		rec = append(rec, a.GetOfficialName())
+		rec = append(rec, string(a.GetSubtype()))
+		rec = append(rec, string(a.GetType()))
+		rec = append(rec, a.GetVerificationStatus())
 
 		cw.Write(rec)
 	}
@@ -390,42 +460,43 @@ func allTransactionsAsCsv(c *gin.Context) {
 	// write records
 	for _, t := range all {
 		var rec []string
-		rec = append(rec, t.AccountID)
+		rec = append(rec, t.AccountId)
 		rec = append(rec, fmt.Sprintf("%f", t.Amount))
-		rec = append(rec, t.ISOCurrencyCode)
-		rec = append(rec, t.UnofficialCurrencyCode)
+		rec = append(rec, t.GetIsoCurrencyCode())
+		rec = append(rec, t.GetUnofficialCurrencyCode())
 		rec = append(rec, strings.Join(t.Category, ","))
-		rec = append(rec, t.CategoryID)
+		rec = append(rec, t.GetCategoryId())
 		rec = append(rec, t.Date)
-		rec = append(rec, t.AuthorizedDate)
+		rec = append(rec, t.GetAuthorizedDate())
 
-		rec = append(rec, t.Location.Address)
-		rec = append(rec, t.Location.City)
-		rec = append(rec, fmt.Sprintf("%f", t.Location.Lat))
-		rec = append(rec, fmt.Sprintf("%f", t.Location.Lon))
-		rec = append(rec, t.Location.Region)
-		rec = append(rec, t.Location.StoreNumber)
-		rec = append(rec, t.Location.PostalCode)
-		rec = append(rec, t.Location.Country)
+		rec = append(rec, t.Location.GetAddress())
+		rec = append(rec, t.Location.GetCity())
+		rec = append(rec, fmt.Sprintf("%f", t.Location.GetLat()))
+		rec = append(rec, fmt.Sprintf("%f", t.Location.GetLon()))
+		rec = append(rec, t.Location.GetRegion())
+		rec = append(rec, t.Location.GetStoreNumber())
+		rec = append(rec, t.Location.GetPostalCode())
+		rec = append(rec, t.Location.GetCountry())
 
 		rec = append(rec, t.Name)
-		rec = append(rec, t.PaymentMeta.ByOrderOf)
-		rec = append(rec, t.PaymentMeta.Payee)
-		rec = append(rec, t.PaymentMeta.Payer)
-		rec = append(rec, t.PaymentMeta.PaymentMethod)
-		rec = append(rec, t.PaymentMeta.PaymentProcessor)
-		rec = append(rec, t.PaymentMeta.PPDID)
-		rec = append(rec, t.PaymentMeta.Reason)
-		rec = append(rec, t.PaymentMeta.ReferenceNumber)
+		pm := t.GetPaymentMeta()
+		rec = append(rec, *pm.ByOrderOf.Get())
+		rec = append(rec, pm.GetPayee())
+		rec = append(rec, pm.GetPayer())
+		rec = append(rec, pm.GetPaymentMethod())
+		rec = append(rec, pm.GetPaymentProcessor())
+		rec = append(rec, pm.GetPpdId())
+		rec = append(rec, pm.GetReason())
+		rec = append(rec, pm.GetReferenceNumber())
 
 		rec = append(rec, t.PaymentChannel)
 		rec = append(rec, fmt.Sprintf("%v", t.Pending))
 
-		rec = append(rec, t.PendingTransactionID)
-		rec = append(rec, t.AccountOwner)
-		rec = append(rec, t.ID)
-		rec = append(rec, t.Type)
-		rec = append(rec, t.Code)
+		rec = append(rec, t.GetPendingTransactionId())
+		rec = append(rec, t.GetAccountOwner())
+		rec = append(rec, t.TransactionId)
+		rec = append(rec, *t.TransactionType)
+		rec = append(rec, string(t.GetTransactionCode()))
 
 		cw.Write(rec)
 	}
@@ -440,19 +511,19 @@ func writeCsvHeaderAccounts(cw *csv.Writer) {
 
 	rec = addFieldsByJsonTag(
 		rec,
-		reflect.TypeOf(plaid.Account{}),
-		[]string{"AccountID"},
+		reflect.TypeOf(plaid.AccountBase{}),
+		[]string{"AccountId"},
 	)
 
 	rec = addFieldsByJsonTag(
 		rec,
-		reflect.TypeOf(plaid.AccountBalances{}),
-		[]string{"Available", "Current", "Limit", "ISOCurrencyCode", "UnofficialCurrencyCode"},
+		reflect.TypeOf(plaid.AccountBalance{}),
+		[]string{"Available", "Current", "Limit", "IsoCurrencyCode", "UnofficialCurrencyCode"},
 	)
 
 	rec = addFieldsByJsonTag(
 		rec,
-		reflect.TypeOf(plaid.Account{}),
+		reflect.TypeOf(plaid.AccountBase{}),
 		[]string{"Mask", "Name", "OfficialName", "Subtype", "Type", "VerificationStatus"},
 	)
 
@@ -511,46 +582,77 @@ func addFieldsByJsonTag(rec []string, tType reflect.Type, fields []string) []str
 // This functionality is only relevant for the UK Payment Initiation product.
 // Retrieve Payment for a specified Payment ID
 func payment(c *gin.Context) {
-	response, err := client.GetPayment(paymentID)
+	ctx := context.Background()
+
+	paymentGetResp, _, err := client.PlaidApi.PaymentInitiationPaymentGet(ctx).PaymentInitiationPaymentGetRequest(
+		*plaid.NewPaymentInitiationPaymentGetRequest(paymentID),
+	).Execute()
+
 	if err != nil {
 		renderError(c, err)
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"payment": response.Payment,
+		"payment": paymentGetResp,
+	})
+}
+
+// This functionality is only relevant for the ACH Transfer product.
+// Retrieve Transfer for a specified Transfer ID
+func transfer(c *gin.Context) {
+	ctx := context.Background()
+
+	transferGetResp, _, err := client.PlaidApi.TransferGet(ctx).TransferGetRequest(
+		*plaid.NewTransferGetRequest(transferID),
+	).Execute()
+	if err != nil {
+		renderError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"transfer": transferGetResp.GetTransfer(),
 	})
 }
 
 func investmentTransactions(c *gin.Context) {
+	ctx := context.Background()
+
 	endDate := time.Now().Local().Format("2006-01-02")
 	startDate := time.Now().Local().Add(-30 * 24 * time.Hour).Format("2006-01-02")
-	response, err := client.GetInvestmentTransactions(accessToken, startDate, endDate)
-	fmt.Println("error", err)
+
+	request := plaid.NewInvestmentsTransactionsGetRequest(accessToken, startDate, endDate)
+	invTxResp, _, err := client.PlaidApi.InvestmentsTransactionsGet(ctx).InvestmentsTransactionsGetRequest(*request).Execute()
+
 	if err != nil {
 		renderError(c, err)
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"investment_transactions": response,
+		"investment_transactions": invTxResp,
 	})
 }
 
 func holdings(c *gin.Context) {
-	response, err := client.GetHoldings(accessToken)
+	ctx := context.Background()
+
+	holdingsGetResp, _, err := client.PlaidApi.InvestmentsHoldingsGet(ctx).InvestmentsHoldingsGetRequest(
+		*plaid.NewInvestmentsHoldingsGetRequest(accessToken),
+	).Execute()
 	if err != nil {
 		renderError(c, err)
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"holdings": response,
+		"holdings": holdingsGetResp,
 	})
 }
 
 func info(context *gin.Context) {
-	context.JSON(200, map[string]interface{}{
+	context.JSON(http.StatusOK, map[string]interface{}{
 		"item_id":      itemID,
 		"access_token": accessToken,
 		"products":     strings.Split(PLAID_PRODUCTS, ","),
@@ -558,16 +660,21 @@ func info(context *gin.Context) {
 }
 
 func createPublicToken(c *gin.Context) {
+	ctx := context.Background()
+
 	// Create a one-time use public_token for the Item.
 	// This public_token can be used to initialize Link in update mode for a user
-	publicToken, err := client.CreatePublicToken(accessToken)
+	publicTokenCreateResp, _, err := client.PlaidApi.ItemCreatePublicToken(ctx).ItemPublicTokenCreateRequest(
+		*plaid.NewItemPublicTokenCreateRequest(accessToken),
+	).Execute()
+
 	if err != nil {
 		renderError(c, err)
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"public_token": publicToken,
+		"public_token": publicTokenCreateResp.GetPublicToken(),
 	})
 }
 
@@ -580,44 +687,187 @@ func createLinkToken(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"link_token": linkToken})
 }
 
-type httpError struct {
-	errorCode int
-	error     string
+func convertCountryCodes(countryCodeStrs []string) []plaid.CountryCode {
+	countryCodes := []plaid.CountryCode{}
+
+	for _, countryCodeStr := range countryCodeStrs {
+		countryCodes = append(countryCodes, plaid.CountryCode(countryCodeStr))
+	}
+
+	return countryCodes
 }
 
-func (httpError *httpError) Error() string {
-	return httpError.error
+func convertProducts(productStrs []string) []plaid.Products {
+	products := []plaid.Products{}
+
+	for _, productStr := range productStrs {
+		products = append(products, plaid.Products(productStr))
+	}
+
+	return products
 }
 
 // linkTokenCreate creates a link token using the specified parameters
 func linkTokenCreate(
-	paymentInitiation *plaid.PaymentInitiation,
-) (string, *httpError) {
-	countryCodes := strings.Split(PLAID_COUNTRY_CODES, ",")
-	products := strings.Split(PLAID_PRODUCTS, ",")
+	paymentInitiation *plaid.LinkTokenCreateRequestPaymentInitiation,
+) (string, error) {
+	ctx := context.Background()
+	countryCodes := convertCountryCodes(strings.Split(PLAID_COUNTRY_CODES, ","))
+	products := convertProducts(strings.Split(PLAID_PRODUCTS, ","))
 	redirectURI := PLAID_REDIRECT_URI
-	configs := plaid.LinkTokenConfigs{
-		User: &plaid.LinkTokenUser{
-			// This should correspond to a unique id for the current user.
-			ClientUserID: "user-id",
-		},
-		ClientName:        "Plaid Quickstart",
-		Products:          products,
-		CountryCodes:      countryCodes,
-		Language:          "en",
-		RedirectUri:       redirectURI,
-		PaymentInitiation: paymentInitiation,
+
+	user := plaid.LinkTokenCreateRequestUser{
+		ClientUserId: time.Now().String(),
 	}
-	resp, err := client.CreateLinkToken(configs)
+
+	request := plaid.NewLinkTokenCreateRequest(
+		"Plaid Quickstart",
+		"en",
+		countryCodes,
+		user,
+	)
+
+	request.SetProducts(products)
+
+	if redirectURI != "" {
+		request.SetRedirectUri(redirectURI)
+	}
+
+	if paymentInitiation != nil {
+		request.SetPaymentInitiation(*paymentInitiation)
+	}
+
+	linkTokenCreateResp, _, err := client.PlaidApi.LinkTokenCreate(ctx).LinkTokenCreateRequest(*request).Execute()
+
 	if err != nil {
-		return "", &httpError{
-			errorCode: http.StatusBadRequest,
-			error:     err.Error(),
-		}
+		return "", err
 	}
-	return resp.LinkToken, nil
+
+	return linkTokenCreateResp.GetLinkToken(), nil
 }
 
 func assets(c *gin.Context) {
-	c.JSON(http.StatusBadRequest, gin.H{"error": "unfortunately the go client library does not support assets report creation yet."})
+	ctx := context.Background()
+
+	// create the asset report
+	assetReportCreateResp, _, err := client.PlaidApi.AssetReportCreate(ctx).AssetReportCreateRequest(
+		*plaid.NewAssetReportCreateRequest([]string{accessToken}, 10),
+	).Execute()
+	if err != nil {
+		renderError(c, err)
+		return
+	}
+
+	assetReportToken := assetReportCreateResp.GetAssetReportToken()
+
+	// get the asset report
+	assetReportGetResp, err := pollForAssetReport(ctx, client, assetReportToken)
+	if err != nil {
+		renderError(c, err)
+		return
+	}
+
+	// get it as a pdf
+	pdfRequest := plaid.NewAssetReportPDFGetRequest(assetReportToken)
+	pdfFile, _, err := client.PlaidApi.AssetReportPdfGet(ctx).AssetReportPDFGetRequest(*pdfRequest).Execute()
+	if err != nil {
+		renderError(c, err)
+		return
+	}
+
+	reader := bufio.NewReader(pdfFile)
+	content, err := ioutil.ReadAll(reader)
+	if err != nil {
+		renderError(c, err)
+		return
+	}
+
+	// convert pdf to base64
+	encodedPdf := base64.StdEncoding.EncodeToString(content)
+
+	c.JSON(http.StatusOK, gin.H{
+		"json": assetReportGetResp.GetReport(),
+		"pdf":  encodedPdf,
+	})
+}
+
+func pollForAssetReport(ctx context.Context, client *plaid.APIClient, assetReportToken string) (*plaid.AssetReportGetResponse, error) {
+	numRetries := 20
+	request := plaid.NewAssetReportGetRequest(assetReportToken)
+
+	for i := 0; i < numRetries; i++ {
+		response, _, err := client.PlaidApi.AssetReportGet(ctx).AssetReportGetRequest(*request).Execute()
+		if err != nil {
+			plaidErr, err := plaid.ToPlaidError(err)
+			if plaidErr.ErrorCode == "PRODUCT_NOT_READY" {
+				time.Sleep(1 * time.Second)
+				continue
+			} else {
+				return nil, err
+			}
+		} else {
+			return &response, nil
+		}
+	}
+	return nil, errors.New("Timed out when polling for an asset report.")
+}
+
+// This is a helper function to authorize and create a Transfer after successful
+// exchange of a public_token for an access_token. The transfer_id is then used
+// to obtain the data about that particular Transfer.
+func authorizeAndCreateTransfer(ctx context.Context, client *plaid.APIClient, accessToken string) (string, error) {
+	// We call /accounts/get to obtain first account_id - in production,
+	// account_id's should be persisted in a data store and retrieved
+	// from there.
+	accountsGetResp, _, _ := client.PlaidApi.AccountsGet(ctx).AccountsGetRequest(
+		*plaid.NewAccountsGetRequest(accessToken),
+	).Execute()
+
+	accountID := accountsGetResp.GetAccounts()[0].AccountId
+
+	transferAuthorizationCreateUser := plaid.NewTransferUserInRequest("FirstName LastName")
+	transferAuthorizationCreateRequest := plaid.NewTransferAuthorizationCreateRequest(
+		accessToken,
+		accountID,
+		"credit",
+		"ach",
+		"1.34",
+		"ppd",
+		*transferAuthorizationCreateUser,
+	)
+	transferAuthorizationCreateResp, _, err := client.PlaidApi.TransferAuthorizationCreate(ctx).TransferAuthorizationCreateRequest(*transferAuthorizationCreateRequest).Execute()
+	if err != nil {
+		return "", err
+	}
+	authorizationID := transferAuthorizationCreateResp.GetAuthorization().Id
+
+	transferCreateRequest := plaid.NewTransferCreateRequest(
+		"1223abc456xyz7890001",
+		accessToken,
+		accountID,
+		authorizationID,
+		"credit",
+		"ach",
+		"1.34",
+		"Payment",
+		"ppd",
+		*transferAuthorizationCreateUser,
+	)
+	transferCreateResp, _, err := client.PlaidApi.TransferCreate(ctx).TransferCreateRequest(*transferCreateRequest).Execute()
+	if err != nil {
+		return "", err
+	}
+
+	return transferCreateResp.GetTransfer().Id, nil
+}
+
+// Helper function to determine if Transfer is in Plaid product array
+func itemExists(array []string, product string) bool {
+	for _, item := range array {
+		if item == product {
+			return true
+		}
+	}
+
+	return false
 }
