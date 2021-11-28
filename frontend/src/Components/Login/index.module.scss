@@ -1,0 +1,21 @@
+.logBtn {
+  font-size: 20px;
+  padding: 6px 20px;
+  color: white;
+  background-color: #414141;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  width: 100%;
+
+  &:focus {
+    background-color: black;
+  }
+}
+
+.loginWrapper {
+  text-align: center;
+  padding: 30px;
+  border: 1px solid #80808024;
+  border-radius: 5px;
+}
