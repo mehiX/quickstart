@@ -15,6 +15,7 @@ interface Props {
   schema: string;
   description: string;
   transformData: (arg: any) => Array<DataItem>;
+  userAuthToken: string;
 }
 
 const Endpoint = (props: Props) => {
@@ -24,9 +25,14 @@ const Endpoint = (props: Props) => {
   const [error, setError] = useState<ErrorDataItem | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
+
   const getData = async () => {
+    console.log('dentro', props);
     setIsLoading(true);
-    const response = await fetch(`/api/${props.endpoint}`, { method: "GET" });
+    const response = await fetch(`/api/${props.endpoint}`, { method: "GET", headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${props.userAuthToken}`,
+    }, });
     const data = await response.json();
     if (data.error != null) {
       setError(data.error);
