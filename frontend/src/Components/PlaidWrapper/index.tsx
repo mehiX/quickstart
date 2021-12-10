@@ -7,7 +7,7 @@ import Context from "../../Context";
 
 import styles from "./App.module.scss";
 
-const PlaidWrapper = (props: any) => {
+const PlaidWrapper = () => {
   const { linkSuccess, isItemAccess, dispatch } = useContext(Context);
 
   // Plaid configurations
@@ -78,15 +78,14 @@ const PlaidWrapper = (props: any) => {
     };
     init();
   }, [dispatch, generateToken, getInfo]);
-  
 
   return (
     <>
       <Header />
       {linkSuccess && isItemAccess && (
         <>
-          <Products userAuthToken={props.user.accessToken} />
-          <Items userAuthToken={props.user.accessToken} />
+          <Products />
+          <Items />
         </>
       )}
     </>
