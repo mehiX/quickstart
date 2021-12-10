@@ -51,7 +51,7 @@ const App = () => {
               Hi, {userInfo.displayName} ({userInfo.email})
             </p>
             <h1>Welcome to Jubilee!</h1>
-            <PlaidWrapper />
+            <PlaidWrapper user={userInfo.user} />
           </div>
         )}
         {!userInfo.userID && (
