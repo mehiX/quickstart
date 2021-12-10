@@ -11,7 +11,7 @@ FROM gcr.io/distroless/base-debian10
 
 COPY --from=build /opt/src/go/quickstart /
 COPY --from=build /opt/src/go/*.pem /
-#COPY --from=build /opt/src/go/*.json /
+COPY --from=build /opt/src/go/jub*.json /
 
 EXPOSE 8000
 ENTRYPOINT ["/quickstart"]
