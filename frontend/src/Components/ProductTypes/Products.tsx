@@ -22,7 +22,7 @@ import {
   transformTransferData,
 } from "../../dataUtilities";
 
-const Products = () => {
+const Products = (props: any) => {
   const { products } = useContext(Context);
   return (
     <ProductTypesContainer productType="Products">
@@ -34,6 +34,7 @@ const Products = () => {
           schema="/payment/get/"
           description="Retrieve information about your latest payment."
           transformData={transformPaymentData}
+          userAuthToken={props.userAuthToken}
         />
       )}
       <Endpoint
@@ -43,7 +44,8 @@ const Products = () => {
         schema="/auth/get/"
         description="Retrieve account and routing numbers for checking and savings accounts."
         transformData={transformAuthData}
-      />
+        userAuthToken={props.userAuthToken}
+        />
       <Endpoint
         endpoint="transactions"
         name="Transactions"
@@ -51,7 +53,8 @@ const Products = () => {
         schema="/transactions/get/"
         description="Retrieve transactions for credit and depository accounts."
         transformData={transformTransactionsData}
-      />
+        userAuthToken={props.userAuthToken}
+        />
       <Endpoint
         endpoint="identity"
         name="Identity"
@@ -60,7 +63,8 @@ const Products = () => {
         description="Retrieve Identity information on file with the bank. Reduce
         fraud by comparing user-submitted data to validate identity."
         transformData={transformIdentityData}
-      />
+        userAuthToken={props.userAuthToken}
+        />
       {products.includes("assets") && (
         <Endpoint
           endpoint="assets"
@@ -69,6 +73,7 @@ const Products = () => {
           schema="/assets_report/get/"
           description="Create and retrieve assets information an asset report"
           transformData={transformAssetsData}
+          userAuthToken={props.userAuthToken}
         />
       )}
       <Endpoint
@@ -79,7 +84,8 @@ const Products = () => {
         description="Check balances in real time to prevent non-sufficient funds
         fees."
         transformData={transformBalanceData}
-      />
+        userAuthToken={props.userAuthToken}
+        />
       <Endpoint
         endpoint="holdings"
         name="Investments"
@@ -89,7 +95,8 @@ const Products = () => {
         brokerage, or investment institution. Analyze over-exposure
         to market segments."
         transformData={transformInvestmentsData}
-      />
+        userAuthToken={props.userAuthToken}
+        />
       {products.includes("transfer") && (
         <Endpoint
           endpoint="transfer"
@@ -98,6 +105,7 @@ const Products = () => {
           schema="/transfer/get/"
           description="Retrieve information about your latest ACH Transfer."
           transformData={transformTransferData}
+          userAuthToken={props.userAuthToken}
         />
       )}
     </ProductTypesContainer>
