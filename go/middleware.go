@@ -36,7 +36,7 @@ func firebaseAuth() gin.HandlerFunc {
 			//c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err})
 		}
 
-		log.Println("GOT TOKEN", token)
+		log.Printf("GOT TOKEN: %v\n", token)
 
 		if token != nil {
 			c.Set("uid", token.UID)

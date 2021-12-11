@@ -56,3 +56,5 @@ docker-compose.local*.yml
 go/*.json
 go/*.pem
 test.md
+
+jub*.json

@@ -697,7 +697,7 @@ func holdings(c *gin.Context) {
 func info(context *gin.Context) {
 	context.JSON(http.StatusOK, map[string]interface{}{
 		"item_id":      itemID,
-		"access_token": accessToken,
+		"access_token": accessToken(context),
 		"products":     strings.Split(PLAID_PRODUCTS, ","),
 	})
 }
