@@ -10,6 +10,7 @@ const Link = () => {
   const onSuccess = React.useCallback(
     (public_token: string) => {
       // send public_token to server
+      // TODO: send user UID as well somehow!!
       const setToken = async () => {
         const response = await fetch("/api/set_access_token", {
           method: "POST",
