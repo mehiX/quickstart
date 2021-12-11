@@ -81,7 +81,7 @@ const PlaidWrapper = (props: any) => {
 
   return (
     <>
-      <Header />
+      <Header userAuthToken={props.user.accessToken}/>
       {linkSuccess && isItemAccess && (
         <>
           <Products userAuthToken={props.user.accessToken}/>

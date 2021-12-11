@@ -11,7 +11,6 @@ import {
 
 const Items = (props: any) => (
   <>
-    <p>{props.userAuthToken}</p>
     <ProductTypesContainer productType="Item Management">
       <Endpoint
         endpoint="item"
