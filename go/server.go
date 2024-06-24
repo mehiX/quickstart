@@ -90,10 +90,13 @@ func init() {
 	STORE_DATA = t == "true" || t == "yes"
 
 	log.Printf("Store data: %v\n", STORE_DATA)
+
 }
 
 func main() {
 	r := gin.Default()
+
+	r.Use(firebaseAuth())
 
 	r.POST("/api/info", info)
 
@@ -132,7 +135,7 @@ func main() {
 
 // We store the access_token in memory - in production, store it in a secure
 // persistent data store.
-var accessToken string
+//var accessToken string
 var itemID string
 
 var paymentID string
@@ -141,6 +144,15 @@ var paymentID string
 // We store the transfer_id in memory - in production, store it in a secure
 // persistent data store
 var transferID string
+
+func accessToken(c *gin.Context) string {
+	user, err := users.FindByUID(c.Request.Context(), c.GetString("uid"))
+	if err != nil {
+		return "not found"
+	}
+
+	return user.AccessToken
+}
 
 func renderError(c *gin.Context, originalErr error) {
 	if plaidError, err := plaid.ToPlaidError(originalErr); err == nil {
@@ -165,7 +177,7 @@ func getAccessToken(c *gin.Context) {
 		return
 	}
 
-	accessToken = exchangePublicTokenResp.GetAccessToken()
+	accessToken := exchangePublicTokenResp.GetAccessToken()
 	itemID = exchangePublicTokenResp.GetItemId()
 	if itemExists(strings.Split(PLAID_PRODUCTS, ","), "transfer") {
 		transferID, err = authorizeAndCreateTransfer(ctx, client, accessToken)
@@ -177,6 +189,18 @@ func getAccessToken(c *gin.Context) {
 	fmt.Println("public token: " + publicToken)
 	fmt.Println("access token: " + accessToken)
 	fmt.Println("item ID: " + itemID)
+
+	// save the access token in persistent storage
+	user := User{
+		UID:             c.GetString("uid"),
+		AccessToken:     accessToken,
+		ItemID:          itemID,
+		TokenReceivedAt: time.Now(),
+	}
+
+	if err := users.Save(c.Request.Context(), user); err != nil {
+		renderError(c, err)
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"access_token": accessToken,
@@ -236,7 +260,7 @@ func auth(c *gin.Context) {
 	ctx := context.Background()
 
 	authGetResp, _, err := client.PlaidApi.AuthGet(ctx).AuthGetRequest(
-		*plaid.NewAuthGetRequest(accessToken),
+		*plaid.NewAuthGetRequest(accessToken(c)),
 	).Execute()
 
 	if err != nil {
@@ -254,7 +278,7 @@ func accounts(c *gin.Context) {
 	ctx := context.Background()
 
 	accountsGetResp, _, err := client.PlaidApi.AccountsGet(ctx).AccountsGetRequest(
-		*plaid.NewAccountsGetRequest(accessToken),
+		*plaid.NewAccountsGetRequest(accessToken(c)),
 	).Execute()
 
 	if err != nil {
@@ -271,7 +295,7 @@ func balance(c *gin.Context) {
 	ctx := context.Background()
 
 	balancesGetResp, _, err := client.PlaidApi.AccountsBalanceGet(ctx).AccountsBalanceGetRequest(
-		*plaid.NewAccountsBalanceGetRequest(accessToken),
+		*plaid.NewAccountsBalanceGetRequest(accessToken(c)),
 	).Execute()
 
 	if err != nil {
@@ -288,7 +312,7 @@ func item(c *gin.Context) {
 	ctx := context.Background()
 
 	itemGetResp, _, err := client.PlaidApi.ItemGet(ctx).ItemGetRequest(
-		*plaid.NewItemGetRequest(accessToken),
+		*plaid.NewItemGetRequest(accessToken(c)),
 	).Execute()
 
 	if err != nil {
@@ -318,7 +342,7 @@ func identity(c *gin.Context) {
 	ctx := context.Background()
 
 	identityGetResp, _, err := client.PlaidApi.IdentityGet(ctx).IdentityGetRequest(
-		*plaid.NewIdentityGetRequest(accessToken),
+		*plaid.NewIdentityGetRequest(accessToken(c)),
 	).Execute()
 	if err != nil {
 		renderError(c, err)
@@ -350,6 +374,8 @@ func transactions(c *gin.Context) {
 	log.Printf("%10d\t%10d\t%10d\n", offset, count, total)
 
 	ctx := context.Background()
+
+	accessToken := accessToken(c)
 
 	for total < 0 || offset < total {
 
@@ -391,7 +417,14 @@ func transactions(c *gin.Context) {
 	if STORE_DATA {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if err := saveToDb(ctx, accounts, transactions); err != nil {
+
+		user, err := users.FindByUID(ctx, c.GetString("uid"))
+		if err != nil {
+			renderError(c, err)
+			return
+		}
+
+		if err := saveToDb(ctx, user, accounts, transactions); err != nil {
 			renderError(c, err)
 			return
 		}
@@ -404,10 +437,15 @@ func transactions(c *gin.Context) {
 }
 
 func allAccountsAsCsv(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := c.Request.Context()
 
-	all, err := fetchAllAccounts(ctx)
+	user, err := users.FindByUID(ctx, c.GetString("uid"))
+	if err != nil {
+		renderError(c, err)
+		return
+	}
+
+	all, err := accountsRepo.ListAllForUser(ctx, user)
 	if err != nil {
 		renderError(c, err)
 		return
@@ -442,10 +480,15 @@ func allAccountsAsCsv(c *gin.Context) {
 }
 
 func allTransactionsAsCsv(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := c.Request.Context()
 
-	all, err := fetchAllTransactions(ctx)
+	user, err := users.FindByUID(ctx, c.GetString("uid"))
+	if err != nil {
+		renderError(c, err)
+		return
+	}
+
+	all, err := transactionsRepo.ListAllForUser(ctx, user)
 	if err != nil {
 		renderError(c, err)
 		return
@@ -622,7 +665,7 @@ func investmentTransactions(c *gin.Context) {
 	endDate := time.Now().Local().Format("2006-01-02")
 	startDate := time.Now().Local().Add(-30 * 24 * time.Hour).Format("2006-01-02")
 
-	request := plaid.NewInvestmentsTransactionsGetRequest(accessToken, startDate, endDate)
+	request := plaid.NewInvestmentsTransactionsGetRequest(accessToken(c), startDate, endDate)
 	invTxResp, _, err := client.PlaidApi.InvestmentsTransactionsGet(ctx).InvestmentsTransactionsGetRequest(*request).Execute()
 
 	if err != nil {
@@ -639,7 +682,7 @@ func holdings(c *gin.Context) {
 	ctx := context.Background()
 
 	holdingsGetResp, _, err := client.PlaidApi.InvestmentsHoldingsGet(ctx).InvestmentsHoldingsGetRequest(
-		*plaid.NewInvestmentsHoldingsGetRequest(accessToken),
+		*plaid.NewInvestmentsHoldingsGetRequest(accessToken(c)),
 	).Execute()
 	if err != nil {
 		renderError(c, err)
@@ -654,7 +697,7 @@ func holdings(c *gin.Context) {
 func info(context *gin.Context) {
 	context.JSON(http.StatusOK, map[string]interface{}{
 		"item_id":      itemID,
-		"access_token": accessToken,
+		"access_token": accessToken(context),
 		"products":     strings.Split(PLAID_PRODUCTS, ","),
 	})
 }
@@ -665,7 +708,7 @@ func createPublicToken(c *gin.Context) {
 	// Create a one-time use public_token for the Item.
 	// This public_token can be used to initialize Link in update mode for a user
 	publicTokenCreateResp, _, err := client.PlaidApi.ItemCreatePublicToken(ctx).ItemPublicTokenCreateRequest(
-		*plaid.NewItemPublicTokenCreateRequest(accessToken),
+		*plaid.NewItemPublicTokenCreateRequest(accessToken(c)),
 	).Execute()
 
 	if err != nil {
@@ -751,7 +794,7 @@ func assets(c *gin.Context) {
 
 	// create the asset report
 	assetReportCreateResp, _, err := client.PlaidApi.AssetReportCreate(ctx).AssetReportCreateRequest(
-		*plaid.NewAssetReportCreateRequest([]string{accessToken}, 10),
+		*plaid.NewAssetReportCreateRequest([]string{accessToken(c)}, 10),
 	).Execute()
 	if err != nil {
 		renderError(c, err)
@@ -809,7 +852,7 @@ func pollForAssetReport(ctx context.Context, client *plaid.APIClient, assetRepor
 			return &response, nil
 		}
 	}
-	return nil, errors.New("Timed out when polling for an asset report.")
+	return nil, errors.New("timed out when polling for an asset report")
 }
 
 // This is a helper function to authorize and create a Transfer after successful

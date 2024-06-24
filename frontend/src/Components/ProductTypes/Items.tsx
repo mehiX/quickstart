@@ -9,7 +9,7 @@ import {
   accountsCategories,
 } from "../../dataUtilities";
 
-const Items = () => (
+const Items = (props: any) => (
   <>
     <ProductTypesContainer productType="Item Management">
       <Endpoint
@@ -20,6 +20,7 @@ const Items = () => (
         billed products, available products, and webhook
         information."
         transformData={transformItemData}
+        userAuthToken={props.userAuthTokens}
       />
       <Endpoint
         endpoint="accounts"
@@ -27,6 +28,7 @@ const Items = () => (
         categories={accountsCategories}
         description="Retrieve high-level information about all accounts associated with an item."
         transformData={transformAccountsData}
+        userAuthToken={props.userAuthToken}
       />
     </ProductTypesContainer>
   </>

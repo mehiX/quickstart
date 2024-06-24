@@ -8,7 +8,7 @@ import Context from "../../Context";
 
 import styles from "./index.module.scss";
 
-const Header = () => {
+const Header = (props: any) => {
   const {
     itemId,
     accessToken,
@@ -66,7 +66,7 @@ const Header = () => {
             </div>
           ) : (
             <div className={styles.linkButton}>
-              <Link />
+              <Link userAuthToken={props.userAuthToken}/>
             </div>
           )}
         </>

@@ -4,17 +4,19 @@ import Button from "plaid-threads/Button";
 
 import Context from "../../Context";
 
-const Link = () => {
+const Link = (props: any) => {
   const { linkToken, dispatch } = useContext(Context);
 
   const onSuccess = React.useCallback(
     (public_token: string) => {
       // send public_token to server
+      // TODO: send user UID as well somehow!!
       const setToken = async () => {
         const response = await fetch("/api/set_access_token", {
           method: "POST",
           headers: {
             "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+            "Authorization": `Bearer ${props.userAuthToken}`,
           },
           body: `public_token=${public_token}`,
         });
